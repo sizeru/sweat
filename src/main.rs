@@ -6,6 +6,7 @@ SWEAT - Strange WEather in AusTin
 This program will statistically evaluate whether thweather in Austin is
 strange or not (compared to other locations).
 */
+
 fn main() {
     /*
     Required steps:
@@ -19,14 +20,20 @@ fn main() {
     */
     // let token = fs::read_to_string("./token")
     //     .expect("Could not read token form file");
-    let wban = "13904"; // TODO: WBAN #. Hard coded for now.
-    let data = download_data("2022", wban, true);
-    if let Err(error) = data {
-        panic!("Could not download data: {}", error.to_string());
+    let year = "2023";
+    let wbans = ["13904"]; // TODO: WBAN #. Hard coded for now.
+    let mut location_temps: Vec<Vec<Vec<i16>>> = Vec::new();
+    for wban in wbans {
+        let data = download_data(year, wban, true);
+        if let Err(error) = data {
+            panic!("Could not download data: {}", error.to_string());
+        }
+        let mut data = data.unwrap();
+        remove_invalid_entries(&mut data);
+        let daily_temps = extract_temps(&data, true);
+        location_temps.push(daily_temps);
     }
-    let mut data = data.unwrap();
-    remove_invalid_entries(&mut data);
-    process_data(&data, true);
+    process_temps(&location_temps)
 }
 
 // Downloads data from the NOAA for a specific WBAN. Requires several discrete
@@ -87,7 +94,7 @@ fn remove_invalid_entries(data: &mut Vec<String>) {
     
     data.retain(
         |line|
-        line.get(56..59).unwrap().eq("V03") && line.get(92..93).unwrap().eq("5")
+        (line.get(56..59).unwrap().eq("V03") || line.get(56..59).unwrap().eq("V02")) && line.get(92..93).unwrap().eq("5")
     );
     // for i in 0..data.len() {
     //     println!("{}", data[i]);
@@ -96,12 +103,12 @@ fn remove_invalid_entries(data: &mut Vec<String>) {
 }
 
 // Do the bulk of the handling of the data lmao
-fn process_data(data: &Vec<String>, save_output: bool) {
+fn extract_temps(data: &Vec<String>, save_output: bool) -> Vec<Vec<i16>> {
     let year = usize::from_str_radix(data[0].get(15..19).unwrap(), 10).unwrap(); 
     let leap_year = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
     let days_in_year: usize = if leap_year { 366 } else { 365 };
     let mut daily_temps: Vec<Vec<i16>> = Vec::with_capacity(days_in_year);
-    for i in 0..days_in_year {
+    for _i in 0..days_in_year {
         let day_temps: Vec<i16> = Vec::with_capacity(24);
         daily_temps.push(day_temps);
     }
@@ -113,12 +120,8 @@ fn process_data(data: &Vec<String>, save_output: bool) {
         let day = &mut daily_temps[day_of_year-1];
         day.push(temperature);        
     }
-    for i in 0..daily_temps.len() {
-        for temp in &daily_temps[i] {
-            println!("Day: {} | Temp: {}", i+1, temp);
-        }
-    }
-    // Thankfully this data is all ordered by date
+    // We now have an array of 
+    return daily_temps;
 }
 
 // Gets the body from an HTTP request to a website
@@ -142,9 +145,55 @@ fn day_of_year(date: &str, leap_year: bool) -> usize {
     let month = usize::from_str_radix(month_str, 10).unwrap(); 
     let day = usize::from_str_radix(day_str, 10).unwrap(); 
     return day + month_completion[month - 1];
-  }
+}
 
+// For each temperature:
+//  - Calculate the mean and the standard deviation of each day
+//  - Calculate the mean and the standard deviation of those means
+//  - Store this
+// For all temperatures:
+//  - Compare the daily means and standard deviations and determine which is
+//    weirder 
+//  - Generate graphs which show the change over time
+// TODO: Change temperatures to be a float of f64s. No need to waste time
+// converting more than once
+fn process_temps(locations: &Vec<Vec<Vec<i16>>>) {
+    // This has the following access patern:
+    // - location_temps[location_index][day_of_year][temperature_index]
+    let mut location_averages: Vec<Vec<Average>> = Vec::with_capacity(locations.len());
+    for days_of_week in locations {
+        let mut daily_average: Vec<Average> = Vec::with_capacity(days_of_week.len());
+        for temps in days_of_week {
+            let num_temps_for_today = temps.len();
+            let weight = 1.0 / num_temps_for_today as f64; 
+            let mut first_moment: f64 = 1.0;
+            let mut second_moment: f64 = 1.0;
+            for &temp in temps {
+                let t = f64::from(temp);
+                let fm = t * weight;
+                first_moment += fm;
+                second_moment += t * fm;
+                println!("temp: {}, weight: {}", t, weight);
+            }
+            let variance = second_moment - (first_moment * first_moment);
+            let standard_deviation = variance.sqrt();
+            println!("mean:{} var: {}, sd{}", first_moment, variance, standard_deviation);
+            daily_average.push(Average{mean: first_moment, standard_deviation});
+        }
+        location_averages.push(daily_average);
+    }
 
+    for location in location_averages {
+        for average in location {
+            // println!("Mean: {}, SD: {}", average.mean, average.standard_deviation);
+        }
+    }
+}   
+
+struct Average {
+    mean: f64,
+    standard_deviation: f64,
+}
   /*
   fn day_of_year(date: &str) -> usize {
     let year_str = &date[0..4];
