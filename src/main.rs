@@ -20,8 +20,8 @@ fn main() {
     */
     // let token = fs::read_to_string("./token")
     //     .expect("Could not read token form file");
-    let year = "2023";
-    let wbans = ["13904"]; // TODO: WBAN #. Hard coded for now.
+    let year = "2022";
+    let wbans = ["13904", "12960"]; // TODO: WBAN #. Hard coded for now.
     let mut location_temps: Vec<Vec<Vec<i16>>> = Vec::new();
     for wban in wbans {
         let data = download_data(year, wban, true);
@@ -165,28 +165,58 @@ fn process_temps(locations: &Vec<Vec<Vec<i16>>>) {
         let mut daily_average: Vec<Average> = Vec::with_capacity(days_of_week.len());
         for temps in days_of_week {
             let num_temps_for_today = temps.len();
-            let weight = 1.0 / num_temps_for_today as f64; 
-            let mut first_moment: f64 = 1.0;
-            let mut second_moment: f64 = 1.0;
+            let mut first_moment: i64 = 0;
+            let mut second_moment: i64 = 0;
             for &temp in temps {
-                let t = f64::from(temp);
-                let fm = t * weight;
-                first_moment += fm;
-                second_moment += t * fm;
-                println!("temp: {}, weight: {}", t, weight);
+                let t = temp as i64;
+                first_moment += t;
+                second_moment += t * t;
             }
+            // Single divide for all recorded values because:
+            // 1. Temps from the dataset are stored *10
+            // 2. moments should be divided by their weights
+            let first_moment: f64 = first_moment as f64 / (num_temps_for_today as f64 * 10.0);
+            let second_moment: f64 = second_moment as f64 / (num_temps_for_today as f64 * 100.0);
             let variance = second_moment - (first_moment * first_moment);
             let standard_deviation = variance.sqrt();
-            println!("mean:{} var: {}, sd{}", first_moment, variance, standard_deviation);
             daily_average.push(Average{mean: first_moment, standard_deviation});
         }
         location_averages.push(daily_average);
     }
 
+    let mut city_averages: Vec<(Average, Average)> = Vec::new();
     for location in location_averages {
+        let mut valid_days = 0;
+        let mut mean_m1 = 0.0;
+        let mut mean_m2 = 0.0;
+        let mut sd_m1 = 0.0;
+        let mut sd_m2 = 0.0;
         for average in location {
+            if average.mean.is_nan() {
+                continue;
+            }
+            valid_days += 1;
+            mean_m1 += average.mean;
+            mean_m2 += average.mean * average.mean;
+            sd_m1 += average.standard_deviation;
+            sd_m2 += average.standard_deviation * average.standard_deviation;
             // println!("Mean: {}, SD: {}", average.mean, average.standard_deviation);
         }
+        mean_m1 /= valid_days as f64;
+        mean_m2 /= valid_days as f64;
+        sd_m1 /= valid_days as f64;
+        sd_m2 /= valid_days as f64;
+        let mean_sd = (mean_m2 - (mean_m1 * mean_m1)).sqrt();
+        let average_mean = Average{mean: mean_m1, standard_deviation: mean_sd};
+        let sd_sd = (sd_m2 - (sd_m1 * sd_m1)).sqrt();
+        let average_sd = Average{mean: sd_m1, standard_deviation: sd_sd};
+        city_averages.push((average_mean, average_sd));
+    }
+
+    for location in city_averages {
+        let (mean, sd) = location;
+        println!("City mean: {} +- {}\nCity SD: {} +- {}", 
+            mean.mean, mean.standard_deviation, sd.mean, sd.standard_deviation);
     }
 }   
 
