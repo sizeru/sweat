@@ -21,7 +21,7 @@ fn main() {
     // let token = fs::read_to_string("./token")
     //     .expect("Could not read token form file");
     let year = "2022";
-    let wbans = ["13904", "12960"]; // TODO: WBAN #. Hard coded for now.
+    let wbans = ["13904", "23188"]; // TODO: WBAN #. Hard coded for now.
     let mut location_temps: Vec<Vec<Vec<i16>>> = Vec::new();
     for wban in wbans {
         let data = download_data(year, wban, true);
