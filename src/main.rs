@@ -1,5 +1,6 @@
 use std::{fs, io::Read};
 use flate2::read::GzDecoder;
+use plotters::prelude::*;
 
 /*  
 SWEAT - Strange WEather in AusTin
@@ -21,19 +22,239 @@ fn main() {
     // let token = fs::read_to_string("./token")
     //     .expect("Could not read token form file");
     let year = "2022";
-    let wbans = ["13904", "23188"]; // TODO: WBAN #. Hard coded for now.
-    let mut location_temps: Vec<Vec<Vec<i16>>> = Vec::new();
+    // camp mabry : 13958
+    // albany: 14735
+    // san juan: 11641
+    let wbans = ["13958"/*, "23188"*/]; // TODO: WBAN #. Hard coded for now.
+    // let mut location_temps: Vec<Vec<Vec<i16>>> = Vec::new();
+    let mut location_temps: Vec<Vec<TempData>> = Vec::new();
     for wban in wbans {
         let data = download_data(year, wban, true);
         if let Err(error) = data {
             panic!("Could not download data: {}", error.to_string());
         }
         let mut data = data.unwrap();
+        data.pop(); // Last record is always empty
         remove_invalid_entries(&mut data);
-        let daily_temps = extract_temps(&data, true);
-        location_temps.push(daily_temps);
+        let mut temperatures = extract_detailed_temps(&data);
+        println!("Num temps: {}", temperatures.len());
+        // remove_past_day(&mut temperatures, 7);
+        // combine_like_temps(&mut temperatures);
+        // plot_detailed_week_dist(&temperatures);
+        // let daily_temps = extract_temps(&data, true);
+        location_temps.push(temperatures);
     }
-    process_temps(&location_temps)
+    calc_daily_average(&location_temps);
+    // process_temps(&location_temps)
+}
+
+fn calc_daily_average(location_temps: &Vec<Vec<TempData>>) {
+ for location in location_temps {
+    // Sort all temps into bins
+    let mut day_bins: Vec<Vec<&TempData>> = Vec::with_capacity(366);
+    for i in 0..366 {
+        day_bins.push(Vec::new()); 
+    }
+    for temp in location {
+        let day_of_year = get_day_index_from_minutes(temp.minute_of_year);
+        let bin = &mut day_bins[day_of_year];
+        bin.push(&temp);
+    } 
+    
+    // Calculate the average for every day
+    let mut day_averages: Vec<Average> = Vec::with_capacity(366);
+    for day in day_bins {
+        let mut first_moment: i64 = 0;
+        let mut second_moment: i64 = 0;
+        for temp in day {
+            // let x = temp.temp10 as i64 * temp.duration as i64;
+            first_moment += temp.temp10 as i64 * temp.duration as i64;
+            second_moment += temp.temp10 as i64 * temp.temp10 as i64 * temp.duration as i64;
+        }
+        let first_moment = first_moment as f64 / 14400.0; // Save all division until the end
+        let second_moment = second_moment as f64 / 144000.0;
+        let mean = first_moment;
+        let variance = second_moment - (mean * mean);
+        let standard_deviation = variance.sqrt();
+        day_averages.push(Average { mean, standard_deviation });
+        println!("Intermediate mean: {}, second_moment: {}, sd: {}, variance: {}", mean, second_moment, standard_deviation, variance);
+    }
+
+    // Calculate number of days used
+    let weight = 1.0 / day_averages.len() as f64;
+
+    // Calculate the total average and print it out
+    let mut first_moment: f64 = 0.0;
+    let mut second_moment: f64 = 0.0;
+    for average in day_averages {
+        let x = average.standard_deviation * weight;
+        first_moment += x;
+        second_moment += x * average.standard_deviation as f64;
+    }
+    let mean = first_moment;
+    let variance = second_moment - (mean * mean);
+    let standard_deviation = variance.sqrt();
+    println!("Mean: {}, Standard deviation: {}", mean, standard_deviation);
+ }   
+}
+
+fn get_day_index_from_minutes(minutes: u32) -> usize {
+    return (minutes / 1440) as usize;
+}
+
+fn calc_weekly_average(location_temps: &Vec<TempData>) {
+
+}
+
+fn combine_like_temps (temperatures: &mut Vec<TempData>) {
+    temperatures.sort_unstable_by(|a, b| a.temp10.cmp(&b.temp10));
+    for i in 0..temperatures.len()-1 {
+        if temperatures[i].temp10 == temperatures[i+1].temp10 {
+            let new_duration = temperatures[i].duration + temperatures[i+1].duration;
+            temperatures[i+1].duration = new_duration;
+            temperatures[i].duration = 0;
+
+        }
+    }
+    temperatures.retain(|t| t.duration != 0);
+}
+
+// Remove all entries past a particular day
+fn remove_past_day (temperatures: &mut Vec<TempData>, day: u32) {
+    let limit = 1440 * day;
+    temperatures.retain(|temp| temp.minute_of_year < limit);
+}
+
+fn plot_detailed_year_temps(days: &Vec<TempData>) {
+    let root_drawing_area = BitMapBackend::new("images/0.png", (1920, 1080))
+        .into_drawing_area();
+
+    root_drawing_area.fill(&BLACK).unwrap();
+
+    let mut chart: ChartContext<BitMapBackend, Cartesian2d<plotters::coord::types::RangedCoordi32, plotters::coord::types::RangedCoordf64>> = ChartBuilder::on(&root_drawing_area)
+        .set_label_area_size(LabelAreaPosition::Bottom, 140)
+        .set_label_area_size(LabelAreaPosition::Left, 240)
+        .margin(50)
+        // .caption("Temperatures Recorded at Camp Mabry Over a Year", ("sans-serif", 40))
+        .build_cartesian_2d(0..527040, -15.0..50.0)
+        .unwrap();
+
+    chart.configure_mesh()
+        .x_labels(15)
+        .x_label_formatter(&|x| format!("{}", *x / 1440))
+        .x_desc("Progress in Year (Days)")
+        .y_labels(12)
+        .y_desc("Temperature (°F)")
+        .y_label_formatter(&|y| format!("{}", *y * (9.0/5.0) + 32.0))
+        .axis_desc_style(("sans-serif", 70, &WHITE))
+        .axis_style(&WHITE)
+        .label_style(("sans-serif", 70, &WHITE))
+        .draw().unwrap();
+
+    chart.draw_series(
+        days.iter().map(|t| Circle::new((t.minute_of_year as i32, t.temp10 as f64 / 10.0), 2, &WHITE))    
+    )
+    .unwrap()
+    .label("Test");
+}
+
+fn plot_detailed_week_temps(days: &Vec<TempData>) {
+    let root_drawing_area = BitMapBackend::new("images/0.png", (1920, 1080))
+        .into_drawing_area();
+
+    root_drawing_area.fill(&BLACK).unwrap();
+
+    let mut chart: ChartContext<BitMapBackend, Cartesian2d<plotters::coord::types::RangedCoordi32, plotters::coord::types::RangedCoordf64>> = ChartBuilder::on(&root_drawing_area)
+        .set_label_area_size(LabelAreaPosition::Bottom, 140)
+        .set_label_area_size(LabelAreaPosition::Left, 240)
+        .margin(50)
+        // .caption("Temperatures Recorded at Camp Mabry Over a Year", ("sans-serif", 40))
+        .build_cartesian_2d(0..(7*1440), -15.0..50.0)
+        .unwrap();
+
+    chart.configure_mesh()
+        .x_labels(7)
+        .x_label_formatter(&|x| format!("{}", *x / 60))
+        .x_desc("Progress in Week (Hours)")
+        .y_labels(12)
+        .y_desc("Temperature (°F)")
+        .y_label_formatter(&|y| format!("{}", *y * (9.0/5.0) + 32.0))
+        .axis_desc_style(("sans-serif", 70, &WHITE))
+        .axis_style(&WHITE)
+        .label_style(("sans-serif", 70, &WHITE))
+        .draw().unwrap();
+
+    chart.draw_series(
+        days.iter().map(|t| Circle::new((t.minute_of_year as i32, t.temp10 as f64 / 10.0), 3, &WHITE))    
+    )
+    .unwrap()
+    .label("Test");
+}
+
+fn plot_detailed_week_dist(days: &Vec<TempData>) {
+    let root_drawing_area = BitMapBackend::new("images/0.png", (1920, 1080))
+        .into_drawing_area();
+
+    root_drawing_area.fill(&BLACK).unwrap();
+
+    let mut chart: ChartContext<BitMapBackend, Cartesian2d<plotters::coord::types::RangedCoordi32, plotters::coord::types::RangedCoordf64>> = ChartBuilder::on(&root_drawing_area)
+        .set_label_area_size(LabelAreaPosition::Bottom, 140)
+        .set_label_area_size(LabelAreaPosition::Left, 240)
+        .margin(40)
+        // .caption("Temperatures Recorded at Camp Mabry Over a Year", ("sans-serif", 40))
+        .build_cartesian_2d(-150..150, 0f64..1000f64)
+        .unwrap();
+
+    chart.configure_mesh()
+        .x_labels(12)
+        .x_desc("Temperature (°F)")
+        .x_label_formatter(&|x| format!("{:.1}", (*x as f32 / 10.0) * (9.0/5.0) + 32.0))
+        .y_labels(10)
+        .y_label_formatter(&|y| format!("{:.3}", *y as f32 / (7*1440) as f32))
+        .y_desc("Probability")
+        .axis_desc_style(("sans-serif", 70, &WHITE))
+        .axis_style(&WHITE)
+        .label_style(("sans-serif", 50, &WHITE))
+        .draw().unwrap();
+
+        chart.draw_series(
+            Histogram::vertical(&chart)
+                .style(RED.mix(0.8).filled())
+                .data(days.iter().map(|t| (t.temp10 as i32, t.duration as f64))),
+        ).unwrap();
+}
+
+fn plot_detailed_day_temps(days: &Vec<TempData>) {
+    let root_drawing_area = BitMapBackend::new("images/0.png", (1920, 1080))
+        .into_drawing_area();
+
+    root_drawing_area.fill(&BLACK).unwrap();
+
+    let mut chart: ChartContext<BitMapBackend, Cartesian2d<plotters::coord::types::RangedCoordi32, plotters::coord::types::RangedCoordf64>> = ChartBuilder::on(&root_drawing_area)
+        .set_label_area_size(LabelAreaPosition::Bottom, 140)
+        .set_label_area_size(LabelAreaPosition::Left, 240)
+        .margin(50)
+        // .caption("Temperatures Recorded at Camp Mabry Over a Year", ("sans-serif", 40))
+        .build_cartesian_2d(0..(1440), -15.0..50.0)
+        .unwrap();
+
+    chart.configure_mesh()
+        .x_labels(24)
+        .x_label_formatter(&|x| format!("{}", *x / 60))
+        .x_desc("Progress in Week (Hours)")
+        .y_labels(12)
+        .y_desc("Temperature (°F)")
+        .y_label_formatter(&|y| format!("{}", *y * (9.0/5.0) + 32.0))
+        .axis_desc_style(("sans-serif", 70, &WHITE))
+        .axis_style(&WHITE)
+        .label_style(("sans-serif", 70, &WHITE))
+        .draw().unwrap();
+
+    chart.draw_series(
+        days.iter().map(|t| Circle::new((t.minute_of_year as i32, t.temp10 as f64 / 10.0), 3, &WHITE))    
+    )
+    .unwrap()
+    .label("Test");
 }
 
 // Downloads data from the NOAA for a specific WBAN. Requires several discrete
@@ -87,11 +308,7 @@ fn download_data(year: &str, wban: &str, save_output: bool) -> Result<Vec<String
 // Remove invalid entries from the data. Currently, valid entries are entries
 // which have passed all NOAA quality control checks and come from official NOAA
 // sources.
-fn remove_invalid_entries(data: &mut Vec<String>) {
-    data.pop(); // The last element in this will always be empty lines
-                // due to the way HTTP is delivered
-    
-    
+fn remove_invalid_entries(data: &mut Vec<String>) {    
     data.retain(
         |line|
         (line.get(56..59).unwrap().eq("V03") || line.get(56..59).unwrap().eq("V02")) && line.get(92..93).unwrap().eq("5")
@@ -114,7 +331,7 @@ fn extract_temps(data: &Vec<String>, save_output: bool) -> Vec<Vec<i16>> {
     }
     // let mut daily_temps: Vec<&mut Vec<u16>> = Vec::with_capacity(days_in_year);
     for line in data {
-        let day_of_year = day_of_year(line.get(19..23).unwrap(), leap_year);
+        let day_of_year = get_day_of_year(line.get(19..23).unwrap(), leap_year);
         // println!("Temp: {}", line.get(87..92).unwrap());
         let temperature = i16::from_str_radix(line.get(87..92).unwrap(), 10).unwrap();
         let day = &mut daily_temps[day_of_year-1];
@@ -122,6 +339,44 @@ fn extract_temps(data: &Vec<String>, save_output: bool) -> Vec<Vec<i16>> {
     }
     // We now have an array of 
     return daily_temps;
+}
+
+fn extract_detailed_temps(raw_data: &Vec<String>) -> Vec<TempData> {
+    let year = usize::from_str_radix(raw_data[0].get(15..19).unwrap(), 10).unwrap(); 
+    let leap_year = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let mut temperatures = Vec::<TempData>::new();
+    // let mut daily_temps: Vec<&mut Vec<u16>> = Vec::with_capacity(days_in_year);
+    for i in 0..raw_data.len()-1 {
+        let line = &raw_data[i];
+        let day_of_year = get_day_of_year(line.get(19..23).unwrap(), leap_year);
+        let temperature = i16::from_str_radix(line.get(87..92).unwrap(), 10).unwrap();
+        let hours = u32::from_str_radix(line.get(23..25).unwrap(), 10).unwrap();
+        let minutes = u32::from_str_radix(line.get(25..27).unwrap(), 10).unwrap();
+        let minute_of_year = (day_of_year as u32 - 1) * 1440 + hours * 60 + minutes;
+        
+        let next_line = &raw_data[i+1];
+        let next_day_of_year = get_day_of_year(next_line.get(19..23).unwrap(), leap_year);
+        let next_hours = u32::from_str_radix(next_line.get(23..25).unwrap(), 10).unwrap();
+        let next_minutes = u32::from_str_radix(next_line.get(25..27).unwrap(), 10).unwrap();
+        let next_minute_of_year = (next_day_of_year as u32 - 1) * 1440 + next_hours * 60 + next_minutes;
+        // println!("Day: {}, Hours: {}, Minutes: {}, Minutes of year: {}", day_of_year, hours, minutes, minute_of_year);
+        temperatures.push(TempData{temp10: temperature, minute_of_year, duration: (next_minute_of_year - minute_of_year) as u16});        
+    }
+    let line = &raw_data[raw_data.len()-1];
+    let day_of_year = get_day_of_year(line.get(19..23).unwrap(), leap_year);
+    let temperature = i16::from_str_radix(line.get(87..92).unwrap(), 10).unwrap();
+    let hours = u32::from_str_radix(line.get(23..25).unwrap(), 10).unwrap();
+    let minutes = u32::from_str_radix(line.get(25..27).unwrap(), 10).unwrap();
+    let minute_of_year = (day_of_year as u32 - 1) * 1440 + hours * 60 + minutes;
+    temperatures.push(TempData{temp10: temperature, minute_of_year, duration: 1440u16 - (temperatures[temperatures.len() - 1].minute_of_year as u16 % 1440u16)});
+    // We now have an array of 
+    return temperatures;
+}
+
+struct TempData {
+    temp10: i16,
+    duration: u16, // duration in minutes until next sample. Will be used to calculate probability.
+    minute_of_year: u32
 }
 
 // Gets the body from an HTTP request to a website
@@ -134,7 +389,7 @@ fn extract_temps(data: &Vec<String>, save_output: bool) -> Vec<Vec<i16>> {
 
 // Calculate what day of the year it is given a particular date in MMDD
 // format. This will be used as an index into the array of dates
-fn day_of_year(date: &str, leap_year: bool) -> usize {
+fn get_day_of_year(date: &str, leap_year: bool) -> usize {
     let month_str = &date[..2];
     let day_str = &date[2..4];
     let month_completion: [usize; 12] = if leap_year {
